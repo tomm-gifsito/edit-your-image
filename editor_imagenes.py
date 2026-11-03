@@ -1,777 +1,669 @@
 import os
+import io
+import smtplib
+from email.message import EmailMessage
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageOps, ImageFilter, ImageEnhance
-import pygame  # para reproducir el sonido de transición (pip install pygame)
+import pygame
 
-app = tk.Tk()
+ui = tk.Tk()
+ui.geometry("1024x650")
+ui.configure(background="#252850")
+tk.Wm.wm_title(ui, "Editor de imágenes")
 
-# ancho y alto
-app.geometry("1024x650")
-app.configure(background="#252850")
-tk.Wm.wm_title(app, "editor de imagenes")
-
-COLOR_MARCO = "#1A1C38"
-
-fotoO = None  # acá se guarda la imagen PIL "vigente" (con rotaciones/recortes aplicados)
-foto_respaldo = None  # guarda la versión anterior para la vista previa "Antes / Después"
-filtro_actual = "Original"  # nombre del filtro seleccionado en el combobox
-ruta_guardado = None  # dónde se guardó/cargó por última vez (para "Guardar" sin preguntar)
-guardada = False  # True si lo que se ve en pantalla ya está reflejado en el disco
-
-# --- Historial para Deshacer / Rehacer ---
-historial = []
-historial_futuro = []
-
-# --- Estado del modo "recortar" ---
-modo_recorte = False
-arrastrando = None  # qué borde se está moviendo ahora: "izq", "der", "sup", "inf" o None
-recorte_izq = recorte_der = recorte_sup = recorte_inf = 0  # coordenadas del recuadro (en pantalla)
-recorte_escala = 1.0  # cuánto más grande es la imagen real respecto a la que se ve en pantalla
-img_recorte_tk = None  # referencia a la imagen mostrada durante el recorte
-linea_izq = linea_der = linea_sup = linea_inf = None  # los 4 bordes dibujados en el canvas
-handle_ni = handle_nd = handle_si = handle_sd = None  # las 4 manijas de las esquinas
-img_clara_recorte = None  # imagen tal cual se ve (sin oscurecer)
-img_oscura_recorte = None  # misma imagen, oscurecida (para lo que queda AFUERA del recuadro)
-id_imagen_canvas = None  # id del item de imagen dentro del canvas, para poder reemplazarlo
-offset_mover_x = 0
-offset_mover_y = 0  # distancia entre el click y la esquina sup-izq, para mover sin "saltos"
-
-# --- Sliders de ajuste: van de 0 a 100, con 50 = valor normal (sin cambios) ---
-valor_brillo = 50
-valor_contraste = 50
-valor_saturacion = 50
-
+CLR_MARCO = "#1A1C38"
 
 # ---------------------------------------------------------------
-# Cargar los íconos
+# ESTADO GLOBAL
 # ---------------------------------------------------------------
-RUTA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
-errores_recursos = []  # acá anotamos qué archivos (íconos o audio) no se pudieron cargar
+img = None
+img_ant = None
+flt = "Original"
+ruta_gd = None
+gd_ok = False
 
-ruta_flecha = os.path.join(RUTA_SCRIPT, "flecha.png")
-icono_derecha = None
-icono_izquierda = None
+hist, hist_r = [], []
 
-try:
-    img_flecha = Image.open(ruta_flecha).convert("RGBA")
-    img_flecha.thumbnail((22, 22))
-    icono_derecha = ImageTk.PhotoImage(img_flecha)
-    img_flecha_izq = ImageOps.mirror(img_flecha)
-    icono_izquierda = ImageTk.PhotoImage(img_flecha_izq)
-except Exception as e:
-    errores_recursos.append(f"flecha.png: {e}")
+rc_act = False
+rc_sel = None
+rc_i = rc_d = rc_s = rc_f = 0
+rc_escala = 1.0
+rc_img = rc_dark = None
+rc_id = None
+rc_ln_i = rc_ln_d = rc_ln_s = rc_ln_f = None
+rc_h_ni = rc_h_nd = rc_h_si = rc_h_sd = None
+rc_dx = rc_dy = 0
 
-
-def colorear_icono(imagen_rgba, color_hex):
-    alpha = imagen_rgba.split()[-1]
-    gris = ImageOps.grayscale(imagen_rgba.convert("RGB"))
-    coloreado = ImageOps.colorize(gris, black="#000000", white=color_hex)
-    coloreado.putalpha(alpha)
-    return coloreado
-
-
-ruta_guardar_icono = os.path.join(RUTA_SCRIPT, "guardar.png")
-ruta_guardarcomo_icono = os.path.join(RUTA_SCRIPT, "guardarcomo.png")
-icono_guardar = None
-icono_guardar_verde = None
-icono_guardarcomo = None
-
-try:
-    img_guardar = Image.open(ruta_guardar_icono).convert("RGBA")
-    img_guardar.thumbnail((20, 20))
-    icono_guardar = ImageTk.PhotoImage(img_guardar)
-    icono_guardar_verde = ImageTk.PhotoImage(colorear_icono(img_guardar, "#2ecc71"))
-
-    img_guardarcomo = Image.open(ruta_guardarcomo_icono).convert("RGBA")
-    img_guardarcomo.thumbnail((20, 20))
-    icono_guardarcomo = ImageTk.PhotoImage(img_guardarcomo)
-except Exception as e:
-    errores_recursos.append(f"guardar.png / guardarcomo.png: {e}")
-
-
-ruta_tijeras = os.path.join(RUTA_SCRIPT, "tijeras.jpg")
-ruta_listo = os.path.join(RUTA_SCRIPT, "tilde_verde.png")
-ruta_cancelar_recorte = os.path.join(RUTA_SCRIPT, "cruz.png")
-ruta_deshacer = os.path.join(RUTA_SCRIPT, "desahcer.png")
-ruta_rehacer = os.path.join(RUTA_SCRIPT, "rehacer.png")
-
-icono_tijeras = None
-icono_listo = None
-icono_cancelar_recorte = None
-icono_deshacer = None
-icono_rehacer = None
-
-try:
-    img_tijeras = Image.open(ruta_tijeras).convert("RGBA")
-    img_tijeras.thumbnail((20, 20))
-    icono_tijeras = ImageTk.PhotoImage(img_tijeras)
-except Exception as e:
-    errores_recursos.append(f"tijeras.jpg: {e}")
-
-try:
-    img_listo = Image.open(ruta_listo).convert("RGBA")
-    img_listo.thumbnail((20, 20))
-    icono_listo = ImageTk.PhotoImage(img_listo)
-except Exception as e:
-    errores_recursos.append(f"tilde_verde.png: {e}")
-
-try:
-    img_cancelar_recorte = Image.open(ruta_cancelar_recorte).convert("RGBA")
-    img_cancelar_recorte.thumbnail((20, 20))
-    icono_cancelar_recorte = ImageTk.PhotoImage(img_cancelar_recorte)
-except Exception as e:
-    errores_recursos.append(f"cruz.png: {e}")
-
-# Tamaño grande (32x32) para que se vean bien claros
-try:
-    img_desh = Image.open(ruta_deshacer).convert("RGBA")
-    img_desh.thumbnail((32, 32))
-    icono_deshacer = ImageTk.PhotoImage(img_desh)
-except Exception as e:
-    errores_recursos.append(f"desahcer.png: {e}")
-
-try:
-    img_reh = Image.open(ruta_rehacer).convert("RGBA")
-    img_reh.thumbnail((32, 32))
-    icono_rehacer = ImageTk.PhotoImage(img_reh)
-except Exception as e:
-    errores_recursos.append(f"rehacer.png: {e}")
-
+br = ct = sat = 50
 
 # ---------------------------------------------------------------
-# Sonido de transición
+# RECURSOS: ÍCONOS
 # ---------------------------------------------------------------
-ruta_sonido = os.path.join(RUTA_SCRIPT, "tom.mp3")
-sonido_transicion = None
+DIR_APP = os.path.dirname(os.path.abspath(__file__))
+errs = []
 
+def colorear_icono(im, color):
+    alpha = im.split()[-1]
+    g = ImageOps.grayscale(im.convert("RGB"))
+    c = ImageOps.colorize(g, black="#000000", white=color)
+    c.putalpha(alpha)
+    return c
+
+def cargar_ico(nombre, tam=20):
+    try:
+        im = Image.open(os.path.join(DIR_APP, nombre)).convert("RGBA")
+        im.thumbnail((tam, tam))
+        return im
+    except Exception as e:
+        errs.append(f"{nombre}: {e}")
+        return None
+
+def a_tk(im):
+    return ImageTk.PhotoImage(im) if im else None
+
+_flecha = cargar_ico("flecha.png", 22)
+ico_der = a_tk(_flecha)
+ico_izq = a_tk(ImageOps.mirror(_flecha)) if _flecha else None
+
+_guardar = cargar_ico("guardar.png")
+ico_guardar = a_tk(_guardar)
+ico_guardar_ok = a_tk(colorear_icono(_guardar, "#2ecc71")) if _guardar else None
+ico_guardarcomo = a_tk(cargar_ico("guardarcomo.png"))
+
+ico_tijeras = a_tk(cargar_ico("tijeras.jpg"))
+ico_listo = a_tk(cargar_ico("tilde_verde.png"))
+ico_cancelar_rec = a_tk(cargar_ico("cruz.png"))
+ico_deshacer = a_tk(cargar_ico("desahcer.png", 32))
+ico_rehacer = a_tk(cargar_ico("rehacer.png", 32))
+ico_enviar = a_tk(cargar_ico("enviargmail.png", 30))
+
+# ---------------------------------------------------------------
+# RECURSOS: SONIDO DE TRANSICIÓN
+# ---------------------------------------------------------------
+snd = None
 try:
     pygame.mixer.init()
-    sonido_transicion = pygame.mixer.Sound(ruta_sonido)
+    snd = pygame.mixer.Sound(os.path.join(DIR_APP, "tom.mp3"))
 except Exception as e:
-    errores_recursos.append(f"tom.mp3: {e}")
-
+    errs.append(f"tom.mp3: {e}")
 
 def reproducir_sonido():
-    if sonido_transicion is not None:
-        sonido_transicion.play()
+    if snd is not None:
+        snd.play()
 
+# ---------------------------------------------------------------
+# FILTROS Y AJUSTES
+# ---------------------------------------------------------------
+def aplicar_filtro(im, nom):
+    if nom == "Original":
+        return im
+    if nom == "Desenfoque":
+        return im.filter(ImageFilter.GaussianBlur(radius=4))
+    if nom == "Nitidez":
+        return im.filter(ImageFilter.SHARPEN)
+    if nom == "Detección de bordes":
+        g = ImageOps.grayscale(im)
+        return g.filter(ImageFilter.FIND_EDGES).convert("RGB")
+    if nom == "Negativo":
+        return ImageOps.invert(im)
+    if nom == "Sepia":
+        g = ImageOps.grayscale(im)
+        return ImageOps.colorize(g, black="#3a2410", white="#d9c7a3")
+    return im
 
-def aplicar_filtro(imagen, nombre):
-    if nombre == "Original":
-        return imagen
-    if nombre == "Desenfoque":
-        return imagen.filter(ImageFilter.GaussianBlur(radius=4))
-    if nombre == "Nitidez":
-        return imagen.filter(ImageFilter.SHARPEN)
-    if nombre == "Detección de bordes":
-        gris = ImageOps.grayscale(imagen)
-        return gris.filter(ImageFilter.FIND_EDGES).convert("RGB")
-    if nombre == "Negativo":
-        return ImageOps.invert(imagen)
-    if nombre == "Sepia":
-        gris = ImageOps.grayscale(imagen)
-        return ImageOps.colorize(gris, black="#3a2410", white="#d9c7a3")
-    return imagen
+def aplicar_ajustes(im):
 
+    im = ImageEnhance.Brightness(im).enhance(br / 50)
+    im = ImageEnhance.Contrast(im).enhance(ct / 50)
+    im = ImageEnhance.Color(im).enhance(sat / 50)
+    return im
 
-def aplicar_ajustes(imagen):
-    factor_brillo = valor_brillo / 50
-    factor_contraste = valor_contraste / 50
-    factor_saturacion = valor_saturacion / 50
-
-    imagen = ImageEnhance.Brightness(imagen).enhance(factor_brillo)
-    imagen = ImageEnhance.Contrast(imagen).enhance(factor_contraste)
-    imagen = ImageEnhance.Color(imagen).enhance(factor_saturacion)
-    return imagen
-
-
-def mostrar_imagen(usar_respaldo=False):
-    if fotoO is None:
+# ---------------------------------------------------------------
+# MOSTRAR IMAGEN / VISTA PREVIA
+# ---------------------------------------------------------------
+def mostrar_imagen(bak=False):
+    if img is None:
         return
-    frame_imagen.update_idletasks()
-    ancho = max(frame_imagen.winfo_width() - 10, 100)
-    alto = max(frame_imagen.winfo_height() - 10, 100)
-    
-    if usar_respaldo and foto_respaldo is not None:
-        copia = foto_respaldo.copy()
-    else:
-        copia = aplicar_filtro(fotoO.copy(), filtro_actual)
-        copia = aplicar_ajustes(copia)
-        
-    copia.thumbnail((ancho, alto))
-    imagen_tk = ImageTk.PhotoImage(copia)
-    labelImag.config(image=imagen_tk)
-    labelImag.image = imagen_tk
+    frm_img.update_idletasks()
+    aw = max(frm_img.winfo_width() - 10, 100)
+    ah = max(frm_img.winfo_height() - 10, 100)
 
+    copia = img_ant.copy() if (bak and img_ant is not None) else aplicar_ajustes(aplicar_filtro(img.copy(), flt))
+    copia.thumbnail((aw, ah))
+    tkimg = ImageTk.PhotoImage(copia)
+    lbl_img.config(image=tkimg)
+    lbl_img.image = tkimg
 
-def mostrar_antes(event):
-    mostrar_imagen(usar_respaldo=True)
+def ver_antes(e):
+    mostrar_imagen(bak=True)
 
+def ver_despues(e):
+    mostrar_imagen(bak=False)
 
-def mostrar_despues(event):
-    mostrar_imagen(usar_respaldo=False)
-
-
-# --- Lógica de Historial (Deshacer / Rehacer) ---
+# ---------------------------------------------------------------
+# HISTORIAL (DESHACER / REHACER)
+# ---------------------------------------------------------------
 def guardar_estado():
-    global fotoO, historial, historial_futuro
-    if fotoO is not None:
-        historial.append(fotoO.copy())
-        historial_futuro.clear()
+    global hist
+    if img is not None:
+        hist.append(img.copy())
+        hist_r.clear()
 
-
-def deshacer(event=None):
-    global fotoO, foto_respaldo, historial, historial_futuro
-    if not historial:
+def deshacer(e=None):
+    global img, img_ant
+    if not hist:
         return
-    if fotoO is not None:
-        historial_futuro.append(fotoO.copy())
-    
-    fotoO = historial.pop()
-    foto_respaldo = fotoO.copy()
+    if img is not None:
+        hist_r.append(img.copy())
+    img = hist.pop()
+    img_ant = img.copy()
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
-
-def rehacer(event=None):
-    global fotoO, foto_respaldo, historial, historial_futuro
-    if not historial_futuro:
+def rehacer(e=None):
+    global img, img_ant
+    if not hist_r:
         return
-    if fotoO is not None:
-        historial.append(fotoO.copy())
-        
-    fotoO = historial_futuro.pop()
-    foto_respaldo = fotoO.copy()
+    if img is not None:
+        hist.append(img.copy())
+    img = hist_r.pop()
+    img_ant = img.copy()
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
+# ---------------------------------------------------------------
+# CALLBACKS: SLIDERS Y COMBOBOX DE FILTRO
+# ---------------------------------------------------------------
+def cambiar_ajuste(tipo):
+    def cb(valor):
+        global br, ct, sat
+        n = int(valor)
+        if tipo == "br":
+            br = n
+        elif tipo == "ct":
+            ct = n
+        else:
+            sat = n
+        mostrar_imagen()
+        marcar_cambio()
+    return cb
 
-def cambiar_brillo(valor):
-    global valor_brillo
-    valor_brillo = int(valor)
-    mostrar_imagen()
-    marcar_cambio()
-
-
-def cambiar_contraste(valor):
-    global valor_contraste
-    valor_contraste = int(valor)
-    mostrar_imagen()
-    marcar_cambio()
-
-
-def cambiar_saturacion(valor):
-    global valor_saturacion
-    valor_saturacion = int(valor)
-    mostrar_imagen()
-    marcar_cambio()
-
-
-def cambiar_filtro(event):
-    global filtro_actual
-    filtro_actual = combo_filtros.get()
+def cambiar_filtro(e):
+    global flt
+    flt = cmb_filtro.get()
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
-
-def actualizar_icono_guardado():
-    if icono_guardar is None:
-        menu_guardar.config(text="✓ " if guardada else "💾 ")
+# ---------------------------------------------------------------
+# GUARDADO
+# ---------------------------------------------------------------
+def act_icono():
+    if ico_guardar is None:
+        menu_g.config(text="✓ " if gd_ok else "💾 ")
         return
-    if guardada:
-        menu_guardar.config(image=icono_guardar_verde)
-        menu_guardar.image = icono_guardar_verde
-    else:
-        menu_guardar.config(image=icono_guardar)
-        menu_guardar.image = icono_guardar
-
+    icono = ico_guardar_ok if gd_ok else ico_guardar
+    menu_g.config(image=icono)
+    menu_g.image = icono
 
 def marcar_cambio():
-    global guardada
-    guardada = False
-    actualizar_icono_guardado()
+    global gd_ok
+    gd_ok = False
+    act_icono()
 
-
-def guardar_imagen():
-    global guardada
-    if fotoO is None:
+def guardar_img():
+    global gd_ok
+    if img is None:
         messagebox.showwarning("Atención", "Primero cargá una imagen.")
         return
-    if not ruta_guardado:
+    if not ruta_gd:
         guardar_como()
         return
     try:
-        imagen_final = aplicar_filtro(fotoO, filtro_actual)
-        imagen_final = aplicar_ajustes(imagen_final)
-        if ruta_guardado.lower().endswith((".jpg", ".jpeg")):
-            imagen_final = imagen_final.convert("RGB")
-        imagen_final.save(ruta_guardado)
+        final = aplicar_ajustes(aplicar_filtro(img, flt))
+        if ruta_gd.lower().endswith((".jpg", ".jpeg")):
+            final = final.convert("RGB")
+        final.save(ruta_gd)
     except Exception as e:
         messagebox.showerror("Error al guardar", f"No se pudo guardar el archivo.\nDetalle: {e}")
         return
-    guardada = True
-    actualizar_icono_guardado()
-
+    gd_ok = True
+    act_icono()
 
 def guardar_como():
-    global ruta_guardado, guardada
-    if fotoO is None:
+    global ruta_gd, gd_ok
+    if img is None:
         messagebox.showwarning("Atención", "Primero cargá una imagen.")
         return
     ruta = filedialog.asksaveasfilename(
-        title="Guardar como",
-        defaultextension=".png",
+        title="Guardar como", defaultextension=".png",
         filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("BMP", "*.bmp")]
     )
     if not ruta:
         return
     try:
-        imagen_final = aplicar_filtro(fotoO, filtro_actual)
-        imagen_final = aplicar_ajustes(imagen_final)
+        final = aplicar_ajustes(aplicar_filtro(img, flt))
         if ruta.lower().endswith((".jpg", ".jpeg")):
-            imagen_final = imagen_final.convert("RGB")
-        imagen_final.save(ruta)
+            final = final.convert("RGB")
+        final.save(ruta)
     except Exception as e:
         messagebox.showerror("Error al guardar", f"No se pudo guardar el archivo.\nDetalle: {e}")
         return
-    ruta_guardado = ruta
-    guardada = True
-    actualizar_icono_guardado()
+    ruta_gd = ruta
+    gd_ok = True
+    act_icono()
     messagebox.showinfo("Guardado", "La imagen se guardó correctamente.")
 
-
-def cargarf():
-    global fotoO, foto_respaldo, ruta_guardado, guardada, historial, historial_futuro
+# ---------------------------------------------------------------
+# CARGAR IMAGEN
+# ---------------------------------------------------------------
+def cargar_img():
+    global img, img_ant, ruta_gd, gd_ok
 
     ruta = filedialog.askopenfilename(
         title="Seleccionar imagen",
-        filetypes=[
-            ("Imágenes", "*.jpg *.jpeg *.png *.bmp"),
-            ("Todos los archivos", "*.*")
-        ]
+        filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.bmp"), ("Todos los archivos", "*.*")]
     )
-
     if not ruta:
         return
 
-    extensiones_validas = (".jpg", ".jpeg", ".png", ".bmp")
-    if not ruta.lower().endswith(extensiones_validas):
+    if not ruta.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
         messagebox.showerror("Formato no soportado", "El archivo debe ser JPG, PNG o BMP.")
         return
     try:
-        imagen = Image.open(ruta)
-        imagen.verify()
-        imagen = Image.open(ruta).convert("RGB")
+        nueva = Image.open(ruta)
+        nueva.verify()
+        nueva = Image.open(ruta).convert("RGB")
     except Exception as e:
         messagebox.showerror("Error", "No se puede abrir la imagen")
         return
 
-    fotoO = imagen
-    foto_respaldo = imagen.copy()
-    historial.clear()
-    historial_futuro.clear()
-    
-    label_nombre.config(text=ruta.split("/")[-1])
+    img = nueva
+    img_ant = nueva.copy()
+    hist.clear()
+    hist_r.clear()
 
-    ruta_guardado = ruta
-    guardada = True
-    actualizar_icono_guardado()
+    lbl_nombre.config(text=ruta.split("/")[-1])
+    ruta_gd = ruta
+    gd_ok = True
+    act_icono()
 
     mostrar_imagen()
     reproducir_sonido()
 
-
-def rotateizquierda():
-    global fotoO, foto_respaldo
-    if fotoO is None:
+# ---------------------------------------------------------------
+# ROTAR
+# ---------------------------------------------------------------
+def rot_izq():
+    global img, img_ant
+    if img is None:
         return
     guardar_estado()
-    foto_respaldo = fotoO.copy()
-    fotoO = fotoO.rotate(90, expand=True)
+    img_ant = img.copy()
+    img = img.rotate(90, expand=True)
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
-
-def rotatederecha():
-    global fotoO, foto_respaldo
-    if fotoO is None:
+def rot_der():
+    global img, img_ant
+    if img is None:
         return
     guardar_estado()
-    foto_respaldo = fotoO.copy()
-    fotoO = fotoO.rotate(-90, expand=True)
+    img_ant = img.copy()
+    img = img.rotate(-90, expand=True)
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
-
-def rotate180():
-    global fotoO, foto_respaldo
-    if fotoO is None:
+def rot_180():
+    global img, img_ant
+    if img is None:
         return
     guardar_estado()
-    foto_respaldo = fotoO.copy()
-    fotoO = fotoO.rotate(180, expand=True)
+    img_ant = img.copy()
+    img = img.rotate(180, expand=True)
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
+# ---------------------------------------------------------------
+# RECORTAR (estilo Editor de fotos de Windows)
+# ---------------------------------------------------------------
+def rec_iniciar():
+    global rc_act, rc_escala, rc_i, rc_d, rc_s, rc_f
+    global rc_ln_i, rc_ln_d, rc_ln_s, rc_ln_f
+    global rc_h_ni, rc_h_nd, rc_h_si, rc_h_sd
+    global rc_img, rc_dark, rc_id
 
-# ---------------- RECORTE (crop) ----------------
-
-def iniciar_recorte():
-    global modo_recorte, recorte_escala
-    global recorte_izq, recorte_der, recorte_sup, recorte_inf
-    global linea_izq, linea_der, linea_sup, linea_inf
-    global handle_ni, handle_nd, handle_si, handle_sd
-    global img_clara_recorte, img_oscura_recorte, id_imagen_canvas
-
-    if fotoO is None:
+    if img is None:
         messagebox.showwarning("Atención", "Primero cargá una imagen.")
         return
 
-    modo_recorte = True
+    rc_act = True
+    frm_img.update_idletasks()
+    aw = max(frm_img.winfo_width() - 10, 100)
+    ah = max(frm_img.winfo_height() - 10, 100)
+    im = aplicar_ajustes(aplicar_filtro(img.copy(), flt))
+    im.thumbnail((aw, ah))
 
-    frame_imagen.update_idletasks()
-    ancho_disp = max(frame_imagen.winfo_width() - 10, 100)
-    alto_disp = max(frame_imagen.winfo_height() - 10, 100)
-    imagen_filtrada = aplicar_filtro(fotoO.copy(), filtro_actual)
-    imagen_filtrada = aplicar_ajustes(imagen_filtrada)
-    imagen_filtrada.thumbnail((ancho_disp, alto_disp))
+    rc_escala = img.width / im.width
+    rc_img = im
+    rc_dark = ImageEnhance.Brightness(im).enhance(0.35)
 
-    recorte_escala = fotoO.width / imagen_filtrada.width
+    lbl_img.pack_forget()
+    cv_img.config(width=im.width, height=im.height)
+    cv_img.pack(expand=True)
+    cv_img.delete("all")
+    rc_id = cv_img.create_image(0, 0, anchor="nw", tags="fondo")
 
-    img_clara_recorte = imagen_filtrada
-    img_oscura_recorte = ImageEnhance.Brightness(imagen_filtrada).enhance(0.35)
+    mx, my = im.width * 0.1, im.height * 0.1
+    rc_i, rc_d = mx, im.width - mx
+    rc_s, rc_f = my, im.height - my
 
-    labelImag.pack_forget()
-    canvas_imagen.config(width=imagen_filtrada.width, height=imagen_filtrada.height)
-    canvas_imagen.pack(expand=True)
-    canvas_imagen.delete("all")
+    rc_ln_i = cv_img.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="izq")
+    rc_ln_d = cv_img.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="der")
+    rc_ln_s = cv_img.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="sup")
+    rc_ln_f = cv_img.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="inf")
+    rc_h_ni = cv_img.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="ni")
+    rc_h_nd = cv_img.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="nd")
+    rc_h_si = cv_img.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="si")
+    rc_h_sd = cv_img.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="sd")
+    rec_redibujar()
 
-    id_imagen_canvas = canvas_imagen.create_image(0, 0, anchor="nw", tags="fondo")
+    for p in ("izq", "der", "sup", "inf", "ni", "nd", "si", "sd"):
+        cv_img.tag_bind(p, "<ButtonPress-1>", lambda e, p=p: rec_arrastre_ini(p))
+    cv_img.tag_bind("fondo", "<ButtonPress-1>", rec_mover_ini)
+    cv_img.bind("<B1-Motion>", rec_arrastrar)
+    cv_img.bind("<ButtonRelease-1>", lambda e: rec_arrastre_fin())
 
-    margen_x = imagen_filtrada.width * 0.1
-    margen_y = imagen_filtrada.height * 0.1
-    recorte_izq = margen_x
-    recorte_der = imagen_filtrada.width - margen_x
-    recorte_sup = margen_y
-    recorte_inf = imagen_filtrada.height - margen_y
-
-    linea_izq = canvas_imagen.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="izq")
-    linea_der = canvas_imagen.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="der")
-    linea_sup = canvas_imagen.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="sup")
-    linea_inf = canvas_imagen.create_line(0, 0, 0, 0, fill="#ffffff", width=2, tags="inf")
-
-    handle_ni = canvas_imagen.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="ni")
-    handle_nd = canvas_imagen.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="nd")
-    handle_si = canvas_imagen.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="si")
-    handle_sd = canvas_imagen.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline="", tags="sd")
-
-    redibujar_recorte()
-
-    for parte in ("izq", "der", "sup", "inf", "ni", "nd", "si", "sd"):
-        canvas_imagen.tag_bind(parte, "<ButtonPress-1>", lambda e, p=parte: iniciar_arrastre(p))
-
-    canvas_imagen.tag_bind("fondo", "<ButtonPress-1>", iniciar_mover)
-    canvas_imagen.bind("<B1-Motion>", arrastrar)
-    canvas_imagen.bind("<ButtonRelease-1>", lambda e: detener_arrastre())
-
-    boton_recortar.config(state="disabled")
-    boton_listo.pack(fill="x", padx=15, pady=4)
-    boton_cancelar_recorte.pack(fill="x", padx=15, pady=(0, 4))
+    btn_recortar.config(state="disabled")
+    btn_listo.pack(fill="x", padx=15, pady=4)
+    btn_cancelar_rec.pack(fill="x", padx=15, pady=(0, 4))
     reproducir_sonido()
 
+def rec_redibujar():
+    caja = (int(rc_i), int(rc_s), int(rc_d), int(rc_f))
+    compuesta = rc_dark.copy()
+    compuesta.paste(rc_img.crop(caja), (caja[0], caja[1]))
 
-def redibujar_recorte():
-    caja = (int(recorte_izq), int(recorte_sup), int(recorte_der), int(recorte_inf))
-    compuesta = img_oscura_recorte.copy()
-    compuesta.paste(img_clara_recorte.crop(caja), (caja[0], caja[1]))
+    tkimg = ImageTk.PhotoImage(compuesta)
+    cv_img.itemconfig(rc_id, image=tkimg)
+    cv_img.image = tkimg
 
-    imagen_tk = ImageTk.PhotoImage(compuesta)
-    canvas_imagen.itemconfig(id_imagen_canvas, image=imagen_tk)
-    canvas_imagen.image = imagen_tk
-
-    canvas_imagen.coords(linea_izq, recorte_izq, recorte_sup, recorte_izq, recorte_inf)
-    canvas_imagen.coords(linea_der, recorte_der, recorte_sup, recorte_der, recorte_inf)
-    canvas_imagen.coords(linea_sup, recorte_izq, recorte_sup, recorte_der, recorte_sup)
-    canvas_imagen.coords(linea_inf, recorte_izq, recorte_inf, recorte_der, recorte_inf)
+    cv_img.coords(rc_ln_i, rc_i, rc_s, rc_i, rc_f)
+    cv_img.coords(rc_ln_d, rc_d, rc_s, rc_d, rc_f)
+    cv_img.coords(rc_ln_s, rc_i, rc_s, rc_d, rc_s)
+    cv_img.coords(rc_ln_f, rc_i, rc_f, rc_d, rc_f)
 
     m = 5
-    canvas_imagen.coords(handle_ni, recorte_izq - m, recorte_sup - m, recorte_izq + m, recorte_sup + m)
-    canvas_imagen.coords(handle_nd, recorte_der - m, recorte_sup - m, recorte_der + m, recorte_sup + m)
-    canvas_imagen.coords(handle_si, recorte_izq - m, recorte_inf - m, recorte_izq + m, recorte_inf + m)
-    canvas_imagen.coords(handle_sd, recorte_der - m, recorte_inf - m, recorte_der + m, recorte_inf + m)
+    cv_img.coords(rc_h_ni, rc_i - m, rc_s - m, rc_i + m, rc_s + m)
+    cv_img.coords(rc_h_nd, rc_d - m, rc_s - m, rc_d + m, rc_s + m)
+    cv_img.coords(rc_h_si, rc_i - m, rc_f - m, rc_i + m, rc_f + m)
+    cv_img.coords(rc_h_sd, rc_d - m, rc_f - m, rc_d + m, rc_f + m)
 
-    for item in (linea_izq, linea_der, linea_sup, linea_inf,
-                 handle_ni, handle_nd, handle_si, handle_sd):
-        canvas_imagen.tag_raise(item)
+    for it in (rc_ln_i, rc_ln_d, rc_ln_s, rc_ln_f, rc_h_ni, rc_h_nd, rc_h_si, rc_h_sd):
+        cv_img.tag_raise(it)
 
+def rec_arrastre_ini(p):
+    global rc_sel
+    rc_sel = p
 
-def iniciar_arrastre(parte):
-    global arrastrando
-    arrastrando = parte
+def rec_mover_ini(e):
+    global rc_sel, rc_dx, rc_dy
+    if rc_i < e.x < rc_d and rc_s < e.y < rc_f:
+        rc_sel = "mover"
+        rc_dx = e.x - rc_i
+        rc_dy = e.y - rc_s
 
+def rec_arrastre_fin():
+    global rc_sel
+    rc_sel = None
 
-def iniciar_mover(event):
-    global arrastrando, offset_mover_x, offset_mover_y
-    if recorte_izq < event.x < recorte_der and recorte_sup < event.y < recorte_inf:
-        arrastrando = "mover"
-        offset_mover_x = event.x - recorte_izq
-        offset_mover_y = event.y - recorte_sup
-
-
-def detener_arrastre():
-    global arrastrando
-    arrastrando = None
-
-
-def arrastrar(event):
-    global recorte_izq, recorte_der, recorte_sup, recorte_inf
-
-    if arrastrando is None:
+def rec_arrastrar(e):
+    global rc_i, rc_d, rc_s, rc_f
+    if rc_sel is None:
         return
 
-    ancho_img = img_clara_recorte.width
-    alto_img = img_clara_recorte.height
-    margen_minimo = 20
+    an, al = rc_img.width, rc_img.height
+    mm = 20
 
-    if arrastrando == "izq":
-        recorte_izq = min(max(event.x, 0), recorte_der - margen_minimo)
-    elif arrastrando == "der":
-        recorte_der = max(min(event.x, ancho_img), recorte_izq + margen_minimo)
-    elif arrastrando == "sup":
-        recorte_sup = min(max(event.y, 0), recorte_inf - margen_minimo)
-    elif arrastrando == "inf":
-        recorte_inf = max(min(event.y, alto_img), recorte_sup + margen_minimo)
-    elif arrastrando == "ni":
-        recorte_izq = min(max(event.x, 0), recorte_der - margen_minimo)
-        recorte_sup = min(max(event.y, 0), recorte_inf - margen_minimo)
-    elif arrastrando == "nd":
-        recorte_der = max(min(event.x, ancho_img), recorte_izq + margen_minimo)
-        recorte_sup = min(max(event.y, 0), recorte_inf - margen_minimo)
-    elif arrastrando == "si":
-        recorte_izq = min(max(event.x, 0), recorte_der - margen_minimo)
-        recorte_inf = max(min(event.y, alto_img), recorte_sup + margen_minimo)
-    elif arrastrando == "sd":
-        recorte_der = max(min(event.x, ancho_img), recorte_izq + margen_minimo)
-        recorte_inf = max(min(event.y, alto_img), recorte_sup + margen_minimo)
-    elif arrastrando == "mover":
-        ancho_caja = recorte_der - recorte_izq
-        alto_caja = recorte_inf - recorte_sup
-        nuevo_izq = min(max(event.x - offset_mover_x, 0), ancho_img - ancho_caja)
-        nuevo_sup = min(max(event.y - offset_mover_y, 0), alto_img - alto_caja)
-        recorte_izq = nuevo_izq
-        recorte_der = nuevo_izq + ancho_caja
-        recorte_sup = nuevo_sup
-        recorte_inf = nuevo_sup + alto_caja
+    if rc_sel == "izq":
+        rc_i = min(max(e.x, 0), rc_d - mm)
+    elif rc_sel == "der":
+        rc_d = max(min(e.x, an), rc_i + mm)
+    elif rc_sel == "sup":
+        rc_s = min(max(e.y, 0), rc_f - mm)
+    elif rc_sel == "inf":
+        rc_f = max(min(e.y, al), rc_s + mm)
+    elif rc_sel == "ni":
+        rc_i = min(max(e.x, 0), rc_d - mm)
+        rc_s = min(max(e.y, 0), rc_f - mm)
+    elif rc_sel == "nd":
+        rc_d = max(min(e.x, an), rc_i + mm)
+        rc_s = min(max(e.y, 0), rc_f - mm)
+    elif rc_sel == "si":
+        rc_i = min(max(e.x, 0), rc_d - mm)
+        rc_f = max(min(e.y, al), rc_s + mm)
+    elif rc_sel == "sd":
+        rc_d = max(min(e.x, an), rc_i + mm)
+        rc_f = max(min(e.y, al), rc_s + mm)
+    elif rc_sel == "mover":
+        caja_w, caja_h = rc_d - rc_i, rc_f - rc_s
+        ni = min(max(e.x - rc_dx, 0), an - caja_w)
+        ns = min(max(e.y - rc_dy, 0), al - caja_h)
+        rc_i, rc_d = ni, ni + caja_w
+        rc_s, rc_f = ns, ns + caja_h
 
-    redibujar_recorte()
+    rec_redibujar()
 
+def rec_finalizar():
+    global rc_act, rc_sel
+    rc_act = False
+    rc_sel = None
+    cv_img.pack_forget()
+    lbl_img.pack(fill="both", expand=True, padx=2, pady=2)
+    btn_listo.pack_forget()
+    btn_cancelar_rec.pack_forget()
+    btn_recortar.config(state="normal")
 
-def finalizar_recorte():
-    global modo_recorte, arrastrando
-    modo_recorte = False
-    arrastrando = None
-    canvas_imagen.pack_forget()
-    labelImag.pack(fill="both", expand=True, padx=2, pady=2)
-    boton_listo.pack_forget()
-    boton_cancelar_recorte.pack_forget()
-    boton_recortar.config(state="normal")
-
-
-def confirmar_recorte():
-    global fotoO, foto_respaldo
-    if fotoO is None:
+def rec_confirmar():
+    global img, img_ant
+    if img is None:
         return
     guardar_estado()
-    foto_respaldo = fotoO.copy()
-    
-    izq_real = int(recorte_izq * recorte_escala)
-    der_real = int(recorte_der * recorte_escala)
-    sup_real = int(recorte_sup * recorte_escala)
-    inf_real = int(recorte_inf * recorte_escala)
-
-    fotoO = fotoO.crop((izq_real, sup_real, der_real, inf_real))
-    finalizar_recorte()
+    img_ant = img.copy()
+    img = img.crop((int(rc_i * rc_escala), int(rc_s * rc_escala), int(rc_d * rc_escala), int(rc_f * rc_escala)))
+    rec_finalizar()
     mostrar_imagen()
     marcar_cambio()
     reproducir_sonido()
 
-
-def cancelar_recorte():
-    finalizar_recorte()
+def rec_cancelar():
+    rec_finalizar()
     mostrar_imagen()
     reproducir_sonido()
 
+# ---------------------------------------------------------------
+# ENVIAR POR GMAIL
+# ---------------------------------------------------------------
+def enviar_gmail(remit, clave, dest, asunto, im):
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = asunto, remit, dest
+    msg.set_content("Te comparto esta imagen editada.")
 
-# ---------------- LAYOUT ----------------
+    buf = io.BytesIO()
+    im.convert("RGB").save(buf, format="JPEG")
+    msg.add_attachment(buf.getvalue(), maintype="image", subtype="jpeg", filename="imagen.jpg")
 
-# --- Menú de guardado y botones grandes de Deshacer / Rehacer arriba a la izquierda ---
-menu_guardar = tk.Menubutton(
-    app, relief="flat", background="#252850",
-    activebackground="#1A1C38", bd=0
-)
-menu_guardar.place(x=15, y=10)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+        srv.login(remit, clave)
+        srv.send_message(msg)
 
-menu_desplegable = tk.Menu(menu_guardar, tearoff=0)
-menu_desplegable.add_command(label=" Guardar", image=icono_guardar,
-                            compound="left", command=guardar_imagen)
-menu_desplegable.add_command(label=" Guardar como...", image=icono_guardarcomo,
-                            compound="left", command=guardar_como)
-menu_desplegable.icono1 = icono_guardar
-menu_desplegable.icono2 = icono_guardarcomo
-menu_guardar.config(menu=menu_desplegable)
-actualizar_icono_guardado()
+def abrir_envio():
+    if img is None:
+        messagebox.showwarning("Atención", "Primero cargá una imagen.")
+        return
 
-# Botón Deshacer grande (más espaciado y tamaño 32x32)
-btn_deshacer = tk.Button(
-    app, image=icono_deshacer, relief="flat", background="#252850",
-    activebackground="#1A1C38", bd=0, command=deshacer, cursor="hand2"
-)
-btn_deshacer.place(x=60, y=8)
+    im_envio = aplicar_ajustes(aplicar_filtro(img.copy(), flt))
 
-# Botón Rehacer grande al lado
-btn_rehacer = tk.Button(
-    app, image=icono_rehacer, relief="flat", background="#252850",
-    activebackground="#1A1C38", bd=0, command=rehacer, cursor="hand2"
-)
-btn_rehacer.place(x=105, y=8)
+    vent = tk.Toplevel(ui)
+    vent.title("Enviar por Gmail")
+    vent.configure(background="#252850")
+    vent.geometry("340x520")
+    vent.resizable(False, False)
+    vent.grab_set()
 
-# Atajos de teclado (Ctrl + Z y Ctrl + Y)
-app.bind("<Control-z>", deshacer)
-app.bind("<Control-y>", rehacer)
+    e_remit = campo(vent, "Tu Gmail")
+    e_clave = campo(vent, "Contraseña de aplicación", oculto=True)
+    e_dest = campo(vent, "Gmail destinatario")
+    e_asunto = campo(vent, "Asunto")
+    e_asunto.insert(0, "Imagen editada")
 
-if errores_recursos:
-    mensaje = "No se pudieron cargar estos archivos de ícono:\n\n"
-    mensaje += "\n".join(f"• {e}" for e in errores_recursos)
-    mensaje += "\n\nRevisá que estén guardados en la MISMA carpeta que el script."
-    messagebox.showwarning("Faltan íconos", mensaje)
+    tk.Label(vent, text="Se enviará:", background="#252850", foreground="#aaaaaa",
+             font=("Segoe UI", 8)).pack(anchor="w", padx=20, pady=(10, 2))
 
-cargf = tk.Button(app, text="Cargar imagen", command=cargarf)
-cargf.pack(pady=5)
+    prev = im_envio.copy()
+    prev.thumbnail((180, 140))
+    prev_tk = ImageTk.PhotoImage(prev)
+    lbl_prev = tk.Label(vent, image=prev_tk, background="#1A1C38",
+                         highlightbackground=CLR_MARCO, highlightthickness=2)
+    lbl_prev.image = prev_tk
+    lbl_prev.pack(pady=(0, 15))
 
-label_nombre = tk.Label(app, text="Sin imagen cargada",
-                        background="#252850", foreground="white",
-                        font=("Segoe UI", 9))
-label_nombre.pack(pady=(2, 5))
+    def enviar():
+        r, c, d = e_remit.get().strip(), e_clave.get().strip(), e_dest.get().strip()
+        a = e_asunto.get().strip() or "Imagen editada"
+        if not r or not c or not d:
+            messagebox.showerror("Faltan datos", "Completá tu Gmail, la clave y el destinatario.")
+            return
+        btn_env.config(state="disabled", text="Enviando...")
+        vent.update_idletasks()
+        try:
+            enviar_gmail(r, c, d, a, im_envio)
+        except Exception as e:
+            messagebox.showerror("Error al enviar", f"No se pudo enviar.\nDetalle: {e}")
+            btn_env.config(state="normal", text="Enviar")
+            return
+        messagebox.showinfo("Enviado", "¡La imagen se envió correctamente!")
+        vent.destroy()
 
-frame_imagen = tk.Frame(
-    app,
-    background="#1A1C38",
-    highlightbackground=COLOR_MARCO,
-    highlightthickness=3
-)
-frame_imagen.pack(side="left", fill="both", expand=True, padx=15, pady=5)
-frame_imagen.pack_propagate(False)
+    btn_env = tk.Button(vent, text="Enviar", relief="flat", background="#2ecc71",
+                         foreground="white", command=enviar, padx=15, pady=6)
+    btn_env.pack(pady=(0, 6))
+    tk.Button(vent, text="Cancelar", relief="flat", background="#ffffff",
+              command=vent.destroy, padx=15, pady=6).pack()
 
-labelImag = tk.Label(frame_imagen, background="#1A1C38")
-labelImag.pack(fill="both", expand=True, padx=2, pady=2)
+# ---------------------------------------------------------------
+# AYUDANTES DE INTERFAZ (para no repetir estilo botón a botón)
+# ---------------------------------------------------------------
+def crear_boton(parent, texto, cmd, icono=None, bg="#ffffff"):
+    kw = dict(text=texto, relief="flat", command=cmd, background=bg,
+              anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
+    if icono:
+        kw["image"], kw["compound"] = icono, "left"
+    return tk.Button(parent, **kw)
 
-canvas_imagen = tk.Canvas(frame_imagen, background="#1A1C38", highlightthickness=0)
+def crear_slider(parent, texto, cmd, pb=0):
+    tk.Label(parent, text=texto, background="#1A1C38", foreground="white",
+             font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 0))
+    s = tk.Scale(parent, from_=0, to=100, orient="horizontal",
+                 background="#1A1C38", foreground="white", highlightthickness=0,
+                 troughcolor="#ffffff", command=cmd)
+    s.set(50)
+    s.pack(fill="x", padx=10, pady=(0, pb))
+    return s
 
-# --- Menú en columna, a la derecha ---
-frame_menu = tk.Frame(
-    app,
-    background="#1A1C38",
-    highlightbackground=COLOR_MARCO,
-    highlightthickness=3,
-    width=200
-)
-frame_menu.pack(side="right", fill="y", padx=(0, 15), pady=5)
-frame_menu.pack_propagate(False)
+def boton_top(icono, cmd, x):
+    b = tk.Button(ui, image=icono, relief="flat", background="#252850",
+                  activebackground="#1A1C38", bd=0, command=cmd, cursor="hand2")
+    b.place(x=x, y=8)
+    return b
 
-# Botón de Vista Previa (Antes / Después)
-boton_preview = tk.Button(frame_menu, text="👁 Vista Previa (Mantener)", relief="flat",
-                          background="#4e54c8", foreground="white", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
-boton_preview.pack(fill="x", padx=10, pady=(10, 4))
-boton_preview.bind("<ButtonPress-1>", mostrar_antes)
-boton_preview.bind("<ButtonRelease-1>", mostrar_despues)
+def campo(parent, texto, oculto=False):
+    tk.Label(parent, text=texto, background="#252850", foreground="white",
+             font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(10, 0))
+    e = tk.Entry(parent, show="•" if oculto else "")
+    e.pack(fill="x", padx=20, pady=(2, 0))
+    return e
 
-boton4 = tk.Button(frame_menu, text=" Voltear izquierda", image=icono_izquierda,
-                   compound="left", relief="flat", command=rotateizquierda,
-                   background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
-boton4.pack(fill="x", padx=10, pady=4)
+# ---------------------------------------------------------------
+# LAYOUT
+# ---------------------------------------------------------------
+menu_g = tk.Menubutton(ui, relief="flat", background="#252850", activebackground="#1A1C38", bd=0)
+menu_g.place(x=15, y=10)
 
-boton3 = tk.Button(frame_menu, text=" Voltear derecha", image=icono_derecha,
-                   compound="left", relief="flat", command=rotatederecha,
-                   background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
-boton3.pack(fill="x", padx=10, pady=4)
+menu_d = tk.Menu(menu_g, tearoff=0)
+menu_d.add_command(label=" Guardar", image=ico_guardar, compound="left", command=guardar_img)
+menu_d.add_command(label=" Guardar como...", image=ico_guardarcomo, compound="left", command=guardar_como)
+menu_d.i1, menu_d.i2 = ico_guardar, ico_guardarcomo
+menu_g.config(menu=menu_d)
+act_icono()
 
-boton2 = tk.Button(frame_menu, text="Voltear 180°", relief="flat", command=rotate180,
-                   background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
-boton2.pack(fill="x", padx=10, pady=4)
+btn_gmail = boton_top(ico_enviar, abrir_envio, 50)
+btn_desh = boton_top(ico_deshacer, deshacer, 95)
+btn_reh = boton_top(ico_rehacer, rehacer, 140)
 
-# --- Botón de recorte y sus confirmaciones ---
-boton_recortar = tk.Button(frame_menu, text=" Recortar", image=icono_tijeras,
-                           compound="left", relief="flat", command=iniciar_recorte,
-                           background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
-boton_recortar.pack(fill="x", padx=10, pady=4)
+ui.bind("<Control-z>", deshacer)
+ui.bind("<Control-y>", rehacer)
 
-boton_listo = tk.Button(frame_menu, text=" Listo", image=icono_listo,
-                       compound="left", relief="flat", command=confirmar_recorte,
-                       background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
+if errs:
+    msg = "No se pudieron cargar estos archivos:\n\n" + "\n".join(f"• {e}" for e in errs)
+    msg += "\n\nRevisá que estén guardados en la MISMA carpeta que el script."
+    messagebox.showwarning("Faltan archivos", msg)
 
-boton_cancelar_recorte = tk.Button(frame_menu, text=" Cancelar", image=icono_cancelar_recorte,
-                                   compound="left", relief="flat", command=cancelar_recorte,
-                                   background="#ffffff", anchor="w", padx=10, pady=4, font=("Segoe UI", 9))
+btn_cargar = tk.Button(ui, text="Cargar imagen", command=cargar_img)
+btn_cargar.pack(pady=5)
 
-# --- Combobox de filtros ---
-label_filtro = tk.Label(frame_menu, text="Filtro",
-                        background="#1A1C38", foreground="white",
-                        font=("Segoe UI", 9))
-label_filtro.pack(anchor="w", padx=10, pady=(6, 2))
+lbl_nombre = tk.Label(ui, text="Sin imagen cargada", background="#252850",
+                       foreground="white", font=("Segoe UI", 9))
+lbl_nombre.pack(pady=(2, 5))
 
-combo_filtros = ttk.Combobox(
-    frame_menu,
-    state="readonly",
-    values=["Original", "Desenfoque", "Nitidez",
-            "Detección de bordes", "Negativo", "Sepia"]
-)
-combo_filtros.set("Original")
-combo_filtros.pack(fill="x", padx=10, pady=(0, 4))
-combo_filtros.bind("<<ComboboxSelected>>", cambiar_filtro)
+frm_img = tk.Frame(ui, background="#1A1C38", highlightbackground=CLR_MARCO, highlightthickness=3)
+frm_img.pack(side="left", fill="both", expand=True, padx=15, pady=5)
+frm_img.pack_propagate(False)
 
-# --- Sliders de Brillo / Contraste / Saturación ---
-label_brillo = tk.Label(frame_menu, text="Brillo",
-                       background="#1A1C38", foreground="white", font=("Segoe UI", 8))
-label_brillo.pack(anchor="w", padx=10, pady=(2, 0))
+lbl_img = tk.Label(frm_img, background="#1A1C38")
+lbl_img.pack(fill="both", expand=True, padx=2, pady=2)
 
-slider_brillo = tk.Scale(
-    frame_menu, from_=0, to=100, orient="horizontal",
-    background="#1A1C38", foreground="white", highlightthickness=0,
-    troughcolor="#ffffff", command=cambiar_brillo
-)
-slider_brillo.set(50)
-slider_brillo.pack(fill="x", padx=10)
+cv_img = tk.Canvas(frm_img, background="#1A1C38", highlightthickness=0)
 
-label_contraste = tk.Label(frame_menu, text="Contraste",
-                            background="#1A1C38", foreground="white", font=("Segoe UI", 8))
-label_contraste.pack(anchor="w", padx=10, pady=(2, 0))
+frm_menu = tk.Frame(ui, background="#1A1C38", highlightbackground=CLR_MARCO,
+                     highlightthickness=3, width=200)
+frm_menu.pack(side="right", fill="y", padx=(0, 15), pady=5)
+frm_menu.pack_propagate(False)
 
-slider_contraste = tk.Scale(
-    frame_menu, from_=0, to=100, orient="horizontal",
-    background="#1A1C38", foreground="white", highlightthickness=0,
-    troughcolor="#ffffff", command=cambiar_contraste
-)
-slider_contraste.set(50)
-slider_contraste.pack(fill="x", padx=10)
+btn_preview = tk.Button(frm_menu, text="👁 Vista Previa (Mantener)", relief="flat",
+                         background="#4e54c8", foreground="white", anchor="w",
+                         padx=10, pady=4, font=("Segoe UI", 9))
+btn_preview.pack(fill="x", padx=10, pady=(10, 4))
+btn_preview.bind("<ButtonPress-1>", ver_antes)
+btn_preview.bind("<ButtonRelease-1>", ver_despues)
 
-label_saturacion = tk.Label(frame_menu, text="Saturación",
-                             background="#1A1C38", foreground="white", font=("Segoe UI", 8))
-label_saturacion.pack(anchor="w", padx=10, pady=(2, 0))
+crear_boton(frm_menu, " Voltear izquierda", rot_izq, ico_izq).pack(fill="x", padx=10, pady=4)
+crear_boton(frm_menu, " Voltear derecha", rot_der, ico_der).pack(fill="x", padx=10, pady=4)
+crear_boton(frm_menu, "Voltear 180°", rot_180).pack(fill="x", padx=10, pady=4)
 
-slider_saturacion = tk.Scale(
-    frame_menu, from_=0, to=100, orient="horizontal",
-    background="#1A1C38", foreground="white", highlightthickness=0,
-    troughcolor="#ffffff", command=cambiar_saturacion
-)
-slider_saturacion.set(50)
-slider_saturacion.pack(fill="x", padx=10, pady=(0, 10))
+btn_recortar = crear_boton(frm_menu, " Recortar", rec_iniciar, ico_tijeras)
+btn_recortar.pack(fill="x", padx=10, pady=4)
+btn_listo = crear_boton(frm_menu, " Listo", rec_confirmar, ico_listo)
+btn_cancelar_rec = crear_boton(frm_menu, " Cancelar", rec_cancelar, ico_cancelar_rec)
 
+tk.Label(frm_menu, text="Filtro", background="#1A1C38", foreground="white",
+          font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(6, 2))
 
-app.mainloop()
+cmb_filtro = ttk.Combobox(frm_menu, state="readonly",
+                           values=["Original", "Desenfoque", "Nitidez",
+                                   "Detección de bordes", "Negativo", "Sepia"])
+cmb_filtro.set("Original")
+cmb_filtro.pack(fill="x", padx=10, pady=(0, 4))
+cmb_filtro.bind("<<ComboboxSelected>>", cambiar_filtro)
+
+crear_slider(frm_menu, "Brillo", cambiar_ajuste("br"))
+crear_slider(frm_menu, "Contraste", cambiar_ajuste("ct"))
+crear_slider(frm_menu, "Saturación", cambiar_ajuste("sat"), pb=10)
+
+ui.mainloop()
