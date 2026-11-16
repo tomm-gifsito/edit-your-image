@@ -6,7 +6,7 @@ this repositore is a school project, consist of editor app for images based on p
 
 ////FUNCTIONALITIES////
 
-the tools colum: contains= -crop -original preview -filters -saturation -contrast -brightness
+the tools colum: contains= -crop -original preview -filters -saturation -contrast -brightness -flip image rigth, left and 180
 
 <img width="202" height="576" alt="image" src="https://github.com/user-attachments/assets/eb573381-9a54-4d67-af51-ce332564b2e1" />
 
@@ -18,3 +18,6 @@ save file, download file, send for gmail, undo and redo
 /////DOWLOAD////
 
 for u download the repository, press "CODE"(button green) and press "Download zip" and the repository will be downloaded automatically. In you file explorer unzip the .zip downloaded from the repository AND DOUBLE CLICK ON THE "image editor.exe" FILE
+
+
+thaks for use ♡
